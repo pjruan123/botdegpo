@@ -37,35 +37,32 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # =================================================================
 #                   FUNÇÕES DE KEEP-ALIVE (FLASK)
-# O Render Pinger vai acessar o URL deste servidor para manter o bot ativo.
 # =================================================================
 
 app = Flask('')
 
 @app.route('/')
 def home():
-    # Resposta para o Render Pinger
     return "Bot de Logs está Ativo e sendo Pingado!"
 
 def run_flask():
-    # Roda o servidor Flask em uma Thread separada na porta 8080
     app.run(host='0.0.0.0', port=8080, debug=False)
 
 def keep_alive():
-    # Inicia o servidor Flask em uma Thread para não bloquear o bot do Discord
     t = Thread(target=run_flask)
     t.start()
 
 # =================================================================
-#              TAREFA DE CONTABILIZAÇÃO (RODA A CADA 3 MINUTOS)
-# Reduzido para evitar o erro 429 Too Many Requests
+#              LÓGICA CENTRAL DE CONTABILIZAÇÃO (FUNÇÃO AUXILIAR)
 # =================================================================
 
-@tasks.loop(seconds=180) # 180 segundos = 3 minutos
-async def contabilizar_e_enviar():
+async def run_contabilizacao():
+    """Função que contém a lógica de leitura, contagem e envio de embeds."""
     global MENSAGEM_CONTROLE
 
-    await bot.wait_until_ready()
+    # Garante que o bot está pronto para usar bot.get_channel
+    await bot.wait_until_ready() 
+    
     canal_log = bot.get_channel(CANAL_SOURCE_ID)
     canal_destino = bot.get_channel(CANAL_DESTINO_ID)
 
@@ -99,7 +96,6 @@ async def contabilizar_e_enviar():
         print("ERRO: O bot não tem permissão para ler o histórico de mensagens.")
         return
     except Exception as e:
-        # Este log será mais limpo agora, sem o HTML do 429
         print(f"Ocorreu um erro durante a leitura do histórico: {e}") 
         return
 
@@ -136,8 +132,15 @@ async def contabilizar_e_enviar():
         print(f"ERRO ao enviar/editar mensagem no Discord: {e}")
 
 # =================================================================
+#              TAREFA DE CONTABILIZAÇÃO (CHAMA A LÓGICA)
+# =================================================================
+
+@tasks.loop(seconds=180) # 180 segundos = 3 minutos
+async def contabilizar_e_enviar():
+    await run_contabilizacao()
+
+# =================================================================
 #                         COMANDO DE RESET (LIMPAR MENSAGENS)
-# CORRIGIDO: Usa .coro para forçar a execução do loop
 # =================================================================
 
 @bot.command(name='reset', aliases=['reiniciar', 'limpar'])
@@ -177,14 +180,11 @@ async def reset_contagem(ctx):
         MENSAGEM_CONTROLE = None
         
         # Reinicia o loop (ou starta se estava parado)
-        if contabilizar_e_enviar.is_running():
-             contabilizar_e_enviar.restart()
-        else:
-             contabilizar_e_enviar.start()
+        contabilizar_e_enviar.start()
         
         # 5. FORÇA A ATUALIZAÇÃO NO CANAL DE DESTINO (MENSAGEM ZERO)
-        # CORREÇÃO: Usamos .coro para chamar a função assíncrona do loop com segurança.
-        await contabilizar_e_enviar.coro() 
+        # CORREÇÃO: Chama a função de lógica diretamente!
+        await run_contabilizacao() 
 
         await ctx.send("✅ Nova contagem (zero) iniciada e postada com sucesso!")
             
