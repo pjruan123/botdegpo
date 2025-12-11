@@ -60,7 +60,7 @@ def keep_alive():
 #              TAREFA DE CONTABILIZAÇÃO (RODA A CADA 10 SEGUNDOS)
 # =================================================================
 
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=60)
 async def contabilizar_e_enviar():
     global MENSAGEM_CONTROLE
 
