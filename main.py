@@ -4,6 +4,7 @@ import re
 import os
 from flask import Flask
 from threading import Thread
+import asyncio # Adicionado para garantir o uso correto de bot.loop.create_task
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
@@ -54,13 +55,14 @@ def keep_alive():
 
 # =================================================================
 #              LÓGICA CENTRAL DE CONTABILIZAÇÃO (FUNÇÃO AUXILIAR)
+# Resolve o erro NoneType no !reset chamando a lógica diretamente
 # =================================================================
 
 async def run_contabilizacao():
     """Função que contém a lógica de leitura, contagem e envio de embeds."""
     global MENSAGEM_CONTROLE
 
-    # Garante que o bot está pronto para usar bot.get_channel
+    # Garante que o bot está pronto
     await bot.wait_until_ready() 
     
     canal_log = bot.get_channel(CANAL_SOURCE_ID)
@@ -74,7 +76,7 @@ async def run_contabilizacao():
     compras_arcan = 0
 
     try:
-        # Busca as últimas 500 mensagens de log
+        # Busca as últimas 500 mensagens de log (Limite seguro)
         async for message in canal_log.history(limit=500):
             content = message.content
 
@@ -126,13 +128,14 @@ async def run_contabilizacao():
             await MENSAGEM_CONTROLE.edit(embed=embed)
 
     except discord.NotFound:
+        # Se a mensagem de controle foi apagada manualmente
         MENSAGEM_CONTROLE = await canal_destino.send(embed=embed)
 
     except Exception as e:
         print(f"ERRO ao enviar/editar mensagem no Discord: {e}")
 
 # =================================================================
-#              TAREFA DE CONTABILIZAÇÃO (CHAMA A LÓGICA)
+#              TAREFA DE CONTABILIZAÇÃO (RODA A CADA 3 MINUTOS)
 # =================================================================
 
 @tasks.loop(seconds=180) # 180 segundos = 3 minutos
@@ -141,6 +144,7 @@ async def contabilizar_e_enviar():
 
 # =================================================================
 #                         COMANDO DE RESET (LIMPAR MENSAGENS)
+# CORREÇÃO FINAL implementada com bot.loop.create_task() para evitar o erro NoneType
 # =================================================================
 
 @bot.command(name='reset', aliases=['reiniciar', 'limpar'])
@@ -172,6 +176,7 @@ async def reset_contagem(ctx):
         
     try:
         # 3. LIMPA TODAS AS MENSAGENS DO CANAL DE LOGS
+        # O purge funciona apenas no canal onde os logs estão (CANAL_SOURCE_ID)
         mensagens_apagadas = await canal_log.purge(limit=None, check=None)
         
         await ctx.send(f"✅ {len(mensagens_apagadas)} mensagens antigas foram apagadas do canal de logs!")
@@ -179,22 +184,22 @@ async def reset_contagem(ctx):
         # 4. REINICIA O LOOP E A MENSAGEM DE CONTROLE
         MENSAGEM_CONTROLE = None
         
-        # Reinicia o loop (ou starta se estava parado)
+        # Reinicia o loop
         contabilizar_e_enviar.start()
         
         # 5. FORÇA A ATUALIZAÇÃO NO CANAL DE DESTINO (MENSAGEM ZERO)
-        # CORREÇÃO: Chama a função de lógica diretamente!
-        await run_contabilizacao() 
+        # CORREÇÃO FINAL: Agenda a execução da lógica no loop do bot para garantir estabilidade.
+        bot.loop.create_task(run_contabilizacao())
 
         await ctx.send("✅ Nova contagem (zero) iniciada e postada com sucesso!")
             
     except discord.Forbidden:
         await ctx.send("🚫 ERRO: O bot não tem permissão para apagar mensagens. Conceda 'Gerenciar Mensagens'.")
     except Exception as e:
-        await ctx.send(f"❌ Ocorreu um erro inesperado: {e}")
         # Garante que o loop volte a rodar em caso de erro
         if not contabilizar_e_enviar.is_running():
             contabilizar_e_enviar.start()
+        await ctx.send(f"❌ Ocorreu um erro inesperado durante a limpeza ou reinício: {e}")
 
 # =================================================================
 #                            RODAR O BOT
@@ -209,7 +214,7 @@ async def on_ready():
     if not contabilizar_e_enviar.is_running():
         contabilizar_e_enviar.start()
 
-# O Token é lido de forma segura da variável de ambiente (Render/Replit Secrets)
+# O Token é lido de forma segura da variável de ambiente (Render Secrets)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 if BOT_TOKEN is None:
@@ -220,4 +225,9 @@ else:
     
     # 2. Inicia o bot do Discord
     print("Iniciando o bot do Discord...")
-    bot.run(BOT_TOKEN)
+    # Verifica se o loop de eventos está rodando antes de chamar bot.run()
+    if not asyncio.get_event_loop().is_running():
+        bot.run(BOT_TOKEN)
+    else:
+        # Se for chamado dentro de um loop de eventos já existente (como no Render)
+        asyncio.create_task(bot.start(BOT_TOKEN))
