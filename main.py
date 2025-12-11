@@ -57,10 +57,11 @@ def keep_alive():
     t.start()
 
 # =================================================================
-#              TAREFA DE CONTABILIZAÇÃO (RODA A CADA 10 SEGUNDOS)
+#              TAREFA DE CONTABILIZAÇÃO (RODA A CADA 3 MINUTOS)
+# Reduzido para evitar o erro 429 Too Many Requests
 # =================================================================
 
-@tasks.loop(seconds=60)
+@tasks.loop(seconds=180) # 180 segundos = 3 minutos
 async def contabilizar_e_enviar():
     global MENSAGEM_CONTROLE
 
@@ -98,7 +99,8 @@ async def contabilizar_e_enviar():
         print("ERRO: O bot não tem permissão para ler o histórico de mensagens.")
         return
     except Exception as e:
-        print(f"Ocorreu um erro durante a leitura do histórico: {e}")
+        # Este log será mais limpo agora, sem o HTML do 429
+        print(f"Ocorreu um erro durante a leitura do histórico: {e}") 
         return
 
     # --- MONTAGEM DO EMBED ---
@@ -118,7 +120,7 @@ async def contabilizar_e_enviar():
                     value=f"**{total_geral}** Chests.",
                     inline=False)
 
-    embed.set_footer(text="Contagem atualizada a cada 10 segundos. Use !reset para limpar os logs e zerar.")
+    embed.set_footer(text="Contagem atualizada a cada 3 minutos. Use !reset para limpar os logs e zerar.")
 
     # --- ENVIO / EDIÇÃO DA MENSAGEM ---
     try:
@@ -135,6 +137,7 @@ async def contabilizar_e_enviar():
 
 # =================================================================
 #                         COMANDO DE RESET (LIMPAR MENSAGENS)
+# CORRIGIDO: Usa .coro para forçar a execução do loop
 # =================================================================
 
 @bot.command(name='reset', aliases=['reiniciar', 'limpar'])
@@ -152,7 +155,7 @@ async def reset_contagem(ctx):
         await ctx.send("❌ ERRO: Não foi possível encontrar o canal de logs.")
         return
 
-    # Verifica permissão para limpar mensagens
+    # Verifica permissão para limpar mensagens (Gerenciar Mensagens)
     if not canal_log.guild.me.guild_permissions.manage_messages:
         await ctx.send(f"🚫 ERRO: O bot não possui a permissão 'Gerenciar Mensagens' no canal {canal_log.mention} para limpar o histórico.")
         return
@@ -161,6 +164,7 @@ async def reset_contagem(ctx):
     await ctx.send("🚨 Contagem de Rare Fruit Chests será **REINICIADA**. Limpando **TODAS** as mensagens no canal de logs...")
 
     if contabilizar_e_enviar.is_running():
+        # Para evitar problemas durante o purge
         contabilizar_e_enviar.stop()
         
     try:
@@ -171,10 +175,16 @@ async def reset_contagem(ctx):
 
         # 4. REINICIA O LOOP E A MENSAGEM DE CONTROLE
         MENSAGEM_CONTROLE = None
-        contabilizar_e_enviar.start()
         
-        # 5. FORÇA A ATUALIZAÇÃO NO CANAL DE DESTINO (agora deve mostrar zero)
-        await contabilizar_e_enviar() 
+        # Reinicia o loop (ou starta se estava parado)
+        if contabilizar_e_enviar.is_running():
+             contabilizar_e_enviar.restart()
+        else:
+             contabilizar_e_enviar.start()
+        
+        # 5. FORÇA A ATUALIZAÇÃO NO CANAL DE DESTINO (MENSAGEM ZERO)
+        # CORREÇÃO: Usamos .coro para chamar a função assíncrona do loop com segurança.
+        await contabilizar_e_enviar.coro() 
 
         await ctx.send("✅ Nova contagem (zero) iniciada e postada com sucesso!")
             
@@ -182,6 +192,7 @@ async def reset_contagem(ctx):
         await ctx.send("🚫 ERRO: O bot não tem permissão para apagar mensagens. Conceda 'Gerenciar Mensagens'.")
     except Exception as e:
         await ctx.send(f"❌ Ocorreu um erro inesperado: {e}")
+        # Garante que o loop volte a rodar em caso de erro
         if not contabilizar_e_enviar.is_running():
             contabilizar_e_enviar.start()
 
