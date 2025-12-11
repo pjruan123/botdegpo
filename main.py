@@ -7,8 +7,10 @@ import os  # Necessário para ler o Token da variável de ambiente do Render
 #                         ⚠️ CONFIGURAÇÕES ⚠️
 # =================================================================
 
-CANAL_SOURCE_ID = 1192144411400872099  # ID do canal de logs (Feral)
-CANAL_DESTINO_ID = 1448701158272143402 # ID do canal ONDE o bot vai POSTAR/EDITAR a contagem
+# ID do canal de logs (Feral)
+CANAL_SOURCE_ID = 1192144411400872099
+# ID do canal ONDE o bot vai POSTAR/EDITAR a contagem
+CANAL_DESTINO_ID = 1448701158272143402
 
 # =================================================================
 #                       VARIÁVEIS DE FILTRAGEM
@@ -51,9 +53,11 @@ async def contabilizar_e_enviar():
     compras_arcan = 0
 
     try:
+        # Pega as últimas 500 mensagens do canal de logs
         async for message in canal_log.history(limit=500):
             content = message.content
 
+            # Filtra por itens comprados
             if "Purchased" in content and "Rare Fruit Chest" in content:
 
                 quantidade_match = re.search(r"Purchased x(\d+)", content)
@@ -63,6 +67,7 @@ async def contabilizar_e_enviar():
                     quantidade = int(quantidade_match.group(1))
                     player_name = player_match.group(1)
 
+                    # === LÓGICA DE FILTRO ===
                     if player_name.startswith(NOME_ALVO_RUAN):
                         compras_ruan += quantidade
                     elif player_name.startswith(NOME_ALVO_ARCAN):
@@ -97,13 +102,16 @@ async def contabilizar_e_enviar():
     # --- ENVIO / EDIÇÃO DA MENSAGEM ---
     try:
         if MENSAGEM_CONTROLE is None:
+            # Envia a primeira mensagem e armazena a referência
             MENSAGEM_CONTROLE = await canal_destino.send(embed=embed)
             print("Mensagem de controle enviada.")
         else:
+            # Edita a mensagem existente
             await MENSAGEM_CONTROLE.edit(embed=embed)
             print("Mensagem de controle atualizada (editada).")
 
     except discord.NotFound:
+        # Se a mensagem foi apagada, envia uma nova
         MENSAGEM_CONTROLE = await canal_destino.send(embed=embed)
         print("Mensagem de controle não encontrada. Enviando nova.")
 
@@ -124,8 +132,7 @@ async def on_ready():
     if not contabilizar_e_enviar.is_running():
         contabilizar_e_enviar.start()
 
-
-# --- NOVO BLOCO: INICIALIZAÇÃO SEGURA PARA O RENDER ---
+# --- BLOCO DE INICIALIZAÇÃO SEGURA PARA O RENDER ---
 
 # O token é lido da variável de ambiente 'BOT_TOKEN' configurada no painel do Render.
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
