@@ -9,9 +9,10 @@ from threading import Thread
 #                         ⚠️ CONFIGURAÇÕES ⚠️
 # =================================================================
 
-# IMPORTANTE: Mude estes IDs para os seus canais.
-CANAL_SOURCE_ID = 1192144411400872099  # ID do canal de logs (Feral)
-CANAL_DESTINO_ID = 1448701158272143402 # ID do canal ONDE o bot vai POSTAR/EDITAR a contagem
+# ID do canal ONDE o bot vai LER os logs (MUITO IMPORTANTE!)
+CANAL_SOURCE_ID = 1192144411400872099  
+# ID do canal ONDE o bot vai POSTAR/EDITAR a contagem
+CANAL_DESTINO_ID = 1448701158272143402 
 
 # =================================================================
 #                       VARIÁVEIS DE FILTRAGEM
@@ -36,6 +37,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # =================================================================
 #                   FUNÇÕES DE KEEP-ALIVE (FLASK)
+# O Render Pinger vai acessar o URL deste servidor para manter o bot ativo.
 # =================================================================
 
 app = Flask('')
@@ -46,7 +48,7 @@ def home():
     return "Bot de Logs está Ativo e sendo Pingado!"
 
 def run_flask():
-    # Roda o servidor Flask em uma Thread separada na porta 8080 (padrão do Replit)
+    # Roda o servidor Flask em uma Thread separada na porta 8080
     app.run(host='0.0.0.0', port=8080, debug=False)
 
 def keep_alive():
@@ -87,7 +89,6 @@ async def contabilizar_e_enviar():
                     quantidade = int(quantidade_match.group(1))
                     player_name = player_match.group(1)
 
-                    # LÓGICA DE FILTRO: Conta qualquer nome que comece com o prefixo
                     if player_name.startswith(NOME_ALVO_RUAN):
                         compras_ruan += quantidade
                     elif player_name.startswith(NOME_ALVO_ARCAN):
@@ -117,49 +118,72 @@ async def contabilizar_e_enviar():
                     value=f"**{total_geral}** Chests.",
                     inline=False)
 
-    embed.set_footer(text="Contagem atualizada a cada 10 segundos. Use !reset para começar uma nova postagem.")
+    embed.set_footer(text="Contagem atualizada a cada 10 segundos. Use !reset para limpar os logs e zerar.")
 
     # --- ENVIO / EDIÇÃO DA MENSAGEM ---
     try:
         if MENSAGEM_CONTROLE is None:
-            # Envia uma nova mensagem se for o primeiro ciclo ou após um reset
             MENSAGEM_CONTROLE = await canal_destino.send(embed=embed)
-            print("Mensagem de controle enviada.")
         else:
-            # Edita a mensagem existente
             await MENSAGEM_CONTROLE.edit(embed=embed)
-            print("Mensagem de controle atualizada (editada).")
 
     except discord.NotFound:
-        # Se a mensagem original foi apagada manualmente
         MENSAGEM_CONTROLE = await canal_destino.send(embed=embed)
-        print("Mensagem de controle não encontrada. Enviando nova.")
 
     except Exception as e:
         print(f"ERRO ao enviar/editar mensagem no Discord: {e}")
 
 # =================================================================
-#                         COMANDO DE RESET
+#                         COMANDO DE RESET (LIMPAR MENSAGENS)
 # =================================================================
 
 @bot.command(name='reset', aliases=['reiniciar', 'limpar'])
 async def reset_contagem(ctx):
-    # Proteção: Apenas administradores podem usar o comando
+    global MENSAGEM_CONTROLE
+
+    # 1. VERIFICAÇÃO DE PERMISSÃO
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("🚫 Você não tem permissão de Administrador para usar este comando!")
         return
+        
+    canal_log = bot.get_channel(CANAL_SOURCE_ID)
+    
+    if not canal_log:
+        await ctx.send("❌ ERRO: Não foi possível encontrar o canal de logs.")
+        return
 
-    global MENSAGEM_CONTROLE
+    # Verifica permissão para limpar mensagens
+    if not canal_log.guild.me.guild_permissions.manage_messages:
+        await ctx.send(f"🚫 ERRO: O bot não possui a permissão 'Gerenciar Mensagens' no canal {canal_log.mention} para limpar o histórico.")
+        return
 
-    await ctx.send("🚨 Contagem de Rare Fruit Chests reiniciada. Enviando a nova postagem...")
+    # 2. AVISO INICIAL E PARADA DO LOOP
+    await ctx.send("🚨 Contagem de Rare Fruit Chests será **REINICIADA**. Limpando **TODAS** as mensagens no canal de logs...")
 
-    # Força o bot a "esquecer" a mensagem antiga, forçando um novo envio no próximo ciclo
-    MENSAGEM_CONTROLE = None
+    if contabilizar_e_enviar.is_running():
+        contabilizar_e_enviar.stop()
+        
+    try:
+        # 3. LIMPA TODAS AS MENSAGENS DO CANAL DE LOGS
+        mensagens_apagadas = await canal_log.purge(limit=None, check=None)
+        
+        await ctx.send(f"✅ {len(mensagens_apagadas)} mensagens antigas foram apagadas do canal de logs!")
 
-    # Força a execução imediata do loop para postar a nova mensagem zerada
-    await contabilizar_e_enviar()
+        # 4. REINICIA O LOOP E A MENSAGEM DE CONTROLE
+        MENSAGEM_CONTROLE = None
+        contabilizar_e_enviar.start()
+        
+        # 5. FORÇA A ATUALIZAÇÃO NO CANAL DE DESTINO (agora deve mostrar zero)
+        await contabilizar_e_enviar() 
 
-    await ctx.send("✅ Nova contagem iniciada e postada com sucesso!")
+        await ctx.send("✅ Nova contagem (zero) iniciada e postada com sucesso!")
+            
+    except discord.Forbidden:
+        await ctx.send("🚫 ERRO: O bot não tem permissão para apagar mensagens. Conceda 'Gerenciar Mensagens'.")
+    except Exception as e:
+        await ctx.send(f"❌ Ocorreu um erro inesperado: {e}")
+        if not contabilizar_e_enviar.is_running():
+            contabilizar_e_enviar.start()
 
 # =================================================================
 #                            RODAR O BOT
@@ -174,15 +198,15 @@ async def on_ready():
     if not contabilizar_e_enviar.is_running():
         contabilizar_e_enviar.start()
 
-# O Token é lido de forma segura da variável de ambiente no Replit Secrets
+# O Token é lido de forma segura da variável de ambiente (Render/Replit Secrets)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 if BOT_TOKEN is None:
     print("ERRO CRÍTICO: Variável BOT_TOKEN não encontrada. O bot não pode iniciar.")
 else:
-    # Inicia o servidor Flask para manter o bot ativo
-    keep_alive()
+    # 1. Inicia o servidor Flask para o keep-alive
+    keep_alive() 
     
-    # Inicia o bot do Discord
+    # 2. Inicia o bot do Discord
     print("Iniciando o bot do Discord...")
     bot.run(BOT_TOKEN)
