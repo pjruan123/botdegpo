@@ -4,7 +4,7 @@ import re
 import os
 from flask import Flask
 from threading import Thread
-import asyncio # Adicionado para garantir o uso correto de bot.loop.create_task
+import asyncio # Módulo necessário para a correção final do !reset
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
@@ -47,6 +47,7 @@ def home():
     return "Bot de Logs está Ativo e sendo Pingado!"
 
 def run_flask():
+    # Roda o servidor Flask para manter o Render ativo
     app.run(host='0.0.0.0', port=8080, debug=False)
 
 def keep_alive():
@@ -55,7 +56,6 @@ def keep_alive():
 
 # =================================================================
 #              LÓGICA CENTRAL DE CONTABILIZAÇÃO (FUNÇÃO AUXILIAR)
-# Resolve o erro NoneType no !reset chamando a lógica diretamente
 # =================================================================
 
 async def run_contabilizacao():
@@ -144,7 +144,6 @@ async def contabilizar_e_enviar():
 
 # =================================================================
 #                         COMANDO DE RESET (LIMPAR MENSAGENS)
-# CORREÇÃO FINAL implementada com bot.loop.create_task() para evitar o erro NoneType
 # =================================================================
 
 @bot.command(name='reset', aliases=['reiniciar', 'limpar'])
@@ -163,6 +162,7 @@ async def reset_contagem(ctx):
         return
 
     # Verifica permissão para limpar mensagens (Gerenciar Mensagens)
+    # Garanta que o bot tenha esta permissão no canal de logs!
     if not canal_log.guild.me.guild_permissions.manage_messages:
         await ctx.send(f"🚫 ERRO: O bot não possui a permissão 'Gerenciar Mensagens' no canal {canal_log.mention} para limpar o histórico.")
         return
@@ -171,12 +171,11 @@ async def reset_contagem(ctx):
     await ctx.send("🚨 Contagem de Rare Fruit Chests será **REINICIADA**. Limpando **TODAS** as mensagens no canal de logs...")
 
     if contabilizar_e_enviar.is_running():
-        # Para evitar problemas durante o purge
+        # Parar para evitar race condition com o purge
         contabilizar_e_enviar.stop()
         
     try:
         # 3. LIMPA TODAS AS MENSAGENS DO CANAL DE LOGS
-        # O purge funciona apenas no canal onde os logs estão (CANAL_SOURCE_ID)
         mensagens_apagadas = await canal_log.purge(limit=None, check=None)
         
         await ctx.send(f"✅ {len(mensagens_apagadas)} mensagens antigas foram apagadas do canal de logs!")
@@ -188,8 +187,8 @@ async def reset_contagem(ctx):
         contabilizar_e_enviar.start()
         
         # 5. FORÇA A ATUALIZAÇÃO NO CANAL DE DESTINO (MENSAGEM ZERO)
-        # CORREÇÃO FINAL: Agenda a execução da lógica no loop do bot para garantir estabilidade.
-        bot.loop.create_task(run_contabilizacao())
+        # CORREÇÃO FINAL: Usamos asyncio.create_task para contornar problemas de ambiente do Render/Discord.py
+        asyncio.create_task(run_contabilizacao())
 
         await ctx.send("✅ Nova contagem (zero) iniciada e postada com sucesso!")
             
@@ -225,9 +224,9 @@ else:
     
     # 2. Inicia o bot do Discord
     print("Iniciando o bot do Discord...")
-    # Verifica se o loop de eventos está rodando antes de chamar bot.run()
-    if not asyncio.get_event_loop().is_running():
+    
+    # Executa o bot de forma padrão, que é a mais compatível com o Render
+    try:
         bot.run(BOT_TOKEN)
-    else:
-        # Se for chamado dentro de um loop de eventos já existente (como no Render)
-        asyncio.create_task(bot.start(BOT_TOKEN))
+    except Exception as e:
+        print(f"Erro Crítico ao iniciar o bot: {e}")
