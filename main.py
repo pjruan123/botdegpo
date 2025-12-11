@@ -3,6 +3,9 @@ from discord.ext import commands, tasks
 import re
 import asyncio
 import os # <-- Adicionado para ler variáveis de ambiente
+# >>>>>>> Adicionados para o Servidor Web (Keep-Alive) <<<<<<<
+from aiohttp import web
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
@@ -38,6 +41,33 @@ intents.messages = True
 intents.guild_messages = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
+
+# =================================================================
+#                  >>>>>> SERVIDOR WEB (KEEP-ALIVE) <<<<<<
+# =================================================================
+
+# Handler para responder ao pinger (UptimeRobot, etc.)
+async def handle(request):
+    """Responde ao ping HTTP para manter o Render ativo."""
+    return web.Response(text="Bot is running and counting chests!")
+
+# Função para iniciar o servidor web
+async def start_web_server():
+    """Inicia o servidor web em uma task separada."""
+    try:
+        app = web.Application()
+        app.router.add_get('/', handle)
+        
+        # O Render define a porta na variável de ambiente PORT (usamos 10000 como fallback)
+        port = os.environ.get('PORT', 10000) 
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port=port)
+        await site.start()
+        print(f"✅ Servidor Web (Keep-Alive) iniciado na porta {port}.")
+    except Exception as e:
+        print(f"❌ ERRO ao iniciar servidor web (Keep-Alive): {e}")
 
 # =================================================================
 #              LÓGICA CENTRAL DE CONTABILIZAÇÃO (FUNÇÃO AUXILIAR)
@@ -138,7 +168,7 @@ async def run_contabilizacao():
 #              TAREFA DE CONTABILIZAÇÃO (RODA A CADA 3 MINUTOS)
 # =================================================================
 
-@tasks.loop(seconds=180) # 180 segundos = 3 minutos
+@tasks.loop(seconds=60) # 180 segundos = 3 minutos
 async def contabilizar_e_enviar():
     await run_contabilizacao()
 
@@ -268,6 +298,10 @@ async def on_ready():
     print('--------------------------------------------------')
     print(f'Bot logado como {bot.user}')
     print('--------------------------------------------------')
+    
+    # >>>>> CHAMA O SERVIDOR WEB (KEEP-ALIVE) AQUI <<<<<
+    asyncio.create_task(start_web_server()) 
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
     if not contabilizar_e_enviar.is_running():
         contabilizar_e_enviar.start()
