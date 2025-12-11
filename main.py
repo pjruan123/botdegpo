@@ -1,3 +1,7 @@
+import os
+# ...
+# O token é lido da variável de ambiente no Render
+BOT_TOKEN = os.environ.get("MTIwMDI5NDAxNTk2NzQzMjc5NA.G3-9mR.aqtq5EWX9lGyCw6QVBcM-WR_yS1imw9sFfuWL8")
 import discord
 from discord.ext import commands, tasks
 import re
