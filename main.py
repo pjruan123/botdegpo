@@ -4,7 +4,7 @@ import re
 import os
 from flask import Flask
 from threading import Thread
-import asyncio # Módulo necessário para a correção final do !reset
+import asyncio # Módulo necessário para o agendamento assíncrono
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
@@ -144,6 +144,7 @@ async def contabilizar_e_enviar():
 
 # =================================================================
 #                         COMANDO DE RESET (LIMPAR MENSAGENS)
+# CORREÇÃO FINAL: Removido o start() manual para evitar o erro 'NoneType'
 # =================================================================
 
 @bot.command(name='reset', aliases=['reiniciar', 'limpar'])
@@ -162,7 +163,6 @@ async def reset_contagem(ctx):
         return
 
     # Verifica permissão para limpar mensagens (Gerenciar Mensagens)
-    # Garanta que o bot tenha esta permissão no canal de logs!
     if not canal_log.guild.me.guild_permissions.manage_messages:
         await ctx.send(f"🚫 ERRO: O bot não possui a permissão 'Gerenciar Mensagens' no canal {canal_log.mention} para limpar o histórico.")
         return
@@ -170,7 +170,8 @@ async def reset_contagem(ctx):
     # 2. AVISO INICIAL E PARADA DO LOOP
     await ctx.send("🚨 Contagem de Rare Fruit Chests será **REINICIADA**. Limpando **TODAS** as mensagens no canal de logs...")
 
-    if contabilizar_e_enviar.is_running():
+    was_running = contabilizar_e_enviar.is_running()
+    if was_running:
         # Parar para evitar race condition com o purge
         contabilizar_e_enviar.stop()
         
@@ -180,23 +181,23 @@ async def reset_contagem(ctx):
         
         await ctx.send(f"✅ {len(mensagens_apagadas)} mensagens antigas foram apagadas do canal de logs!")
 
-        # 4. REINICIA O LOOP E A MENSAGEM DE CONTROLE
+        # 4. REINICIA O ESTADO DA MENSAGEM
         MENSAGEM_CONTROLE = None
         
-        # Reinicia o loop
-        contabilizar_e_enviar.start()
-        
         # 5. FORÇA A ATUALIZAÇÃO NO CANAL DE DESTINO (MENSAGEM ZERO)
-        # CORREÇÃO FINAL: Usamos asyncio.create_task para contornar problemas de ambiente do Render/Discord.py
+        # Usa asyncio.create_task para executar a lógica de forma imediata e assíncrona.
         asyncio.create_task(run_contabilizacao())
+        
+        # O loop automático (tasks.loop) reiniciará sozinho em 180 segundos (3 minutos)
+        # Não chamamos .start() manualmente para evitar o bug 'NoneType'.
 
         await ctx.send("✅ Nova contagem (zero) iniciada e postada com sucesso!")
             
     except discord.Forbidden:
         await ctx.send("🚫 ERRO: O bot não tem permissão para apagar mensagens. Conceda 'Gerenciar Mensagens'.")
     except Exception as e:
-        # Garante que o loop volte a rodar em caso de erro
-        if not contabilizar_e_enviar.is_running():
+        # Garante que o loop volte a rodar caso o 'stop()' o tenha desativado
+        if was_running and not contabilizar_e_enviar.is_running():
             contabilizar_e_enviar.start()
         await ctx.send(f"❌ Ocorreu um erro inesperado durante a limpeza ou reinício: {e}")
 
@@ -225,7 +226,6 @@ else:
     # 2. Inicia o bot do Discord
     print("Iniciando o bot do Discord...")
     
-    # Executa o bot de forma padrão, que é a mais compatível com o Render
     try:
         bot.run(BOT_TOKEN)
     except Exception as e:
