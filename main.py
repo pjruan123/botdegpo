@@ -33,7 +33,7 @@ NOME_ALVO_ARCAN = "Arcan"
 MENSAGEM_CONTROLE = None
 
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = True # ESTA INTENÇÃO DEVE ESTAR LIGADA NO PORTAL DO DISCORD
 intents.messages = True
 intents.guild_messages = True
 
@@ -72,7 +72,6 @@ async def run_contabilizacao():
     """Função que contém a lógica de leitura, contagem e envio de embeds."""
     global MENSAGEM_CONTROLE
 
-    # Garante que o bot está pronto
     await bot.wait_until_ready() 
     
     canal_log = bot.get_channel(CANAL_SOURCE_ID)
@@ -86,11 +85,10 @@ async def run_contabilizacao():
     compras_arcan = 0
 
     try:
-        # Busca as últimas 500 mensagens de log
         async for message in canal_log.history(limit=500):
             content = message.content
             
-            # FILTRO ROBUSTO: Procura por qualquer "Fruit Chest" e "Purchased"
+            # FILTRO: Procura por qualquer "Fruit Chest" e "Purchased"
             if "Fruit Chest" in content and "Purchased" in content:
                 
                 quantidade = 0
