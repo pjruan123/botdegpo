@@ -33,7 +33,7 @@ NOME_ALVO_ARCAN = "Arcan"
 MENSAGEM_CONTROLE = None
 
 intents = discord.Intents.default()
-intents.message_content = True # ESTA INTENÇÃO DEVE ESTAR LIGADA NO PORTAL DO DISCORD
+intents.message_content = True # DEVE ESTAR LIGADA NO DISCORD DEVELOPER PORTAL
 intents.messages = True
 intents.guild_messages = True
 
@@ -69,7 +69,11 @@ async def start_web_server():
 # =================================================================
 
 async def run_contabilizacao():
-    """Função que contém a lógica de leitura, contagem e envio de embeds."""
+    """
+    Função que contém a lógica de leitura, contagem e envio de embeds.
+    Agora inclui lógica para ler o conteúdo de embeds, caso o webhook
+    envie o log dentro de um embed em vez de texto puro.
+    """
     global MENSAGEM_CONTROLE
 
     await bot.wait_until_ready() 
@@ -86,9 +90,30 @@ async def run_contabilizacao():
 
     try:
         async for message in canal_log.history(limit=500):
+            # 1. Tenta obter o conteúdo da mensagem (texto puro)
             content = message.content
             
-            # FILTRO: Procura por qualquer "Fruit Chest" e "Purchased"
+            # 2. SE O CONTEÚDO FOR VAZIO, TENTA LER O EMBED (Webhooks costumam usar embed)
+            if not content and message.embeds:
+                try:
+                    embed = message.embeds[0]
+                    # Tenta ler a descrição do embed
+                    if embed.description:
+                        content = embed.description
+                    # Se não tiver descrição, tenta ler o título
+                    elif embed.title:
+                        content = embed.title
+                except Exception as e:
+                    # Ignora embeds mal formados ou vazios
+                    print(f"⚠️ Aviso: Erro ao tentar ler o embed: {e}")
+            
+            # 3. FILTRO FINAL: Se não houver conteúdo em lugar nenhum, pula a mensagem.
+            if not content:
+                continue
+
+            # 4. PROCESSAMENTO DO CONTEÚDO (FUNCIONA PARA TEXTO PURO OU EMBED)
+            
+            # Filtro de compra: Procura por qualquer "Fruit Chest" e "Purchased"
             if "Fruit Chest" in content and "Purchased" in content:
                 
                 quantidade = 0
