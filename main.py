@@ -3,13 +3,14 @@ from discord.ext import commands, tasks
 import re
 import asyncio
 import os 
-import json # Importação para salvar/carregar dados
+import json 
 from aiohttp import web 
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
 # =================================================================
 
+# Lê o token da variável de ambiente BOT_TOKEN (DEVE ser configurada no Render)
 BOT_TOKEN = os.environ.get('BOT_TOKEN') 
 if not BOT_TOKEN:
     print("ERRO CRÍTICO: A variável de ambiente BOT_TOKEN não foi configurada.")
@@ -17,7 +18,7 @@ if not BOT_TOKEN:
 # IDs de canais
 CANAL_SOURCE_ID = 1448778112430116999  
 CANAL_DESTINO_ID = 1448701158272143402 
-ARQUIVO_DADOS = "contagens.json" # Nome do arquivo de dados
+ARQUIVO_DADOS = "contagens.json" # Nome do arquivo de dados para persistência
 
 # =================================================================
 #                       VARIÁVEIS DE FILTRAGEM
@@ -34,14 +35,14 @@ MENSAGEM_CONTROLE = None
 contagens_individuais = {} # { "NomeConta1": 15, "NomeConta2": 30, ... }
 
 intents = discord.Intents.default()
-intents.message_content = True 
+intents.message_content = True # DEVE estar ligada no Discord Developer Portal
 intents.messages = True
 intents.guild_messages = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # =================================================================
-#                   FUNÇÕES DE PERSISTÊNCIA DE DADOS
+#                   FUNÇÕES DE PERSISTÊNCIA DE DADOS (JSON)
 # =================================================================
 
 def carregar_dados():
@@ -95,8 +96,8 @@ async def start_web_server():
 
 async def run_contabilizacao():
     """
-    Função que contém a lógica de leitura, contagem e envio de embeds.
-    Agora rastreia contagens individuais.
+    Lê o histórico, extrai informações de compras de Fruit Chests (de texto ou Embeds)
+    e atualiza o rastreamento individual.
     """
     global MENSAGEM_CONTROLE, contagens_individuais
 
@@ -109,49 +110,55 @@ async def run_contabilizacao():
         print("Erro: Um dos canais (log ou destino) não foi encontrado.")
         return
 
-    # Usamos variáveis temporárias para somar os totais para o Embed
-    temp_compras_ruan = 0
-    temp_compras_arcan = 0
-    
-    # Dicionário temporário para rastrear o que foi processado NESTA rodada
-    processadas_nesta_rodada = {} 
+    # Usamos um conjunto para IDs de mensagens já processadas nesta rodada
+    # para evitar processar a mesma mensagem várias vezes na mesma execução.
+    processadas_nesta_rodada = set() 
 
     try:
         # Busca as últimas 500 mensagens
         async for message in canal_log.history(limit=500):
-            message_id = str(message.id)
+            message_id = message.id
             
-            # Pula mensagens que já foram processadas (lógica de idempotência)
             if message_id in processadas_nesta_rodada:
                 continue
 
             content = message.content
+            full_text = content or "" # Inicia com o conteúdo da mensagem, se houver
             
-            # LÓGICA DE LEITURA DE EMBED (para webhooks)
-            if not content and message.embeds:
+            # LÓGICA DE LEITURA ROBUSTA DE EMBED (para webhooks)
+            if message.embeds:
                 try:
                     embed = message.embeds[0]
+                    # Agrega descrição, título e campos
                     if embed.description:
-                        content = embed.description
-                    elif embed.title:
-                        content = embed.title
+                        full_text += f" {embed.description}"
+                    if embed.title:
+                        full_text += f" {embed.title}"
+                    
+                    for field in embed.fields:
+                        full_text += f" {field.name}: {field.value}"
+                        
                 except Exception:
-                    continue
+                    continue # Ignora embeds mal formados
 
-            if not content:
+            if not full_text.strip():
                 continue
 
             # 4. PROCESSAMENTO DO CONTEÚDO
-            if "Fruit Chest" in content and "Purchased" in content:
+            
+            # Filtro de compra: Procura por qualquer "Fruit Chest" e "Purchased"
+            if "Fruit Chest" in full_text and "Purchased" in full_text:
                 
                 quantidade = 0
                 player_name_completo = ""
                 
-                quantidade_match = re.search(r"Purchased x(\d+)", content, re.IGNORECASE)
+                # Regex para encontrar a quantidade (ex: x1, x5)
+                quantidade_match = re.search(r"Purchased x(\d+)", full_text, re.IGNORECASE)
                 if quantidade_match:
                     quantidade = int(quantidade_match.group(1))
                 
-                player_match = re.search(r"Player:([^(]+)", content)
+                # Regex para encontrar o nome do jogador (ex: Player: RuanPESCADOR2 (ID))
+                player_match = re.search(r"Player:([^(]+)", full_text)
                 if player_match:
                     player_name_completo = player_match.group(1).strip()
                     if "(" in player_name_completo:
@@ -163,23 +170,12 @@ async def run_contabilizacao():
                     
                     if "ruan" in player_lower or "arcan" in player_lower:
                         
-                        # ⚠️ VERIFICAÇÃO PRINCIPAL DE NOVIDADE
-                        # Para rastrear por conta, precisamos de uma forma de saber
-                        # se a contagem desta mensagem já está no arquivo de dados.
-                        # Para fins de demonstração, vamos apenas somar tudo a cada rodada.
-                        
-                        # Rastreamento Individual
+                        # Armazena a contagem individualmente
+                        # A soma é acumulada a cada rodada, por isso o !reset é importante.
                         contagens_individuais[player_name_completo] = contagens_individuais.get(player_name_completo, 0) + quantidade
                         
-                        # Rastreamento Geral (para o Embed)
-                        if "ruan" in player_lower:
-                            temp_compras_ruan += quantidade
-                        elif "arcan" in player_lower:
-                            temp_compras_arcan += quantidade
-                        
                         print(f"✅ Contabilizado: {quantidade} baús para {player_name_completo}.")
-                        
-                        processadas_nesta_rodada[message_id] = True # Marca como processada
+                        processadas_nesta_rodada.add(message_id) 
                         
         # 5. Salva os dados após a contagem
         salvar_dados()
@@ -188,7 +184,7 @@ async def run_contabilizacao():
         print(f"Ocorreu um erro durante a leitura do histórico: {e}") 
         return
 
-    # --- MONTAGEM DO EMBED (Soma de Todas as Contas Rastreáveis) ---
+    # --- MONTAGEM DO EMBED (Totais Gerais baseados nos dados salvos) ---
     
     # Recalcula as somas totais do Ruan/Arcan com base nos dados salvos
     total_ruan = sum(v for k, v in contagens_individuais.items() if NOME_ALVO_RUAN.lower() in k.lower())
@@ -233,32 +229,34 @@ async def contabilizar_e_enviar():
     await run_contabilizacao()
 
 # =================================================================
-#                         COMANDO DE LISTAR (NOVO)
+#                         COMANDO DE LISTAR
 # =================================================================
 
 @bot.command(name='listar', aliases=['conta'])
 async def listar_conta(ctx, *, nome_da_conta: str):
     """Lista a contagem total de baús de uma conta específica."""
     
+    # Tenta busca exata
     if nome_da_conta in contagens_individuais:
         total = contagens_individuais[nome_da_conta]
         await ctx.send(f"✅ A conta **{nome_da_conta}** acumulou **{total}** Fruit Chests.")
-    else:
-        # Tenta uma busca parcial, ignorando caixa
-        matches = {k: v for k, v in contagens_individuais.items() if nome_da_conta.lower() in k.lower()}
+        return
         
-        if matches:
-            response = [f"Contas encontradas que contêm '{nome_da_conta}':"]
-            for nome, total in matches.items():
-                response.append(f"• **{nome}**: {total} Chests")
-            
-            await ctx.send('\n'.join(response))
-        else:
-            await ctx.send(f"❌ Nenhuma contagem encontrada para contas que contenham **'{nome_da_conta}'**.")
+    # Tenta busca parcial (ignora caixa)
+    matches = {k: v for k, v in contagens_individuais.items() if nome_da_conta.lower() in k.lower()}
+    
+    if matches:
+        response = [f"Contas encontradas que contêm '{nome_da_conta}':"]
+        for nome, total in matches.items():
+            response.append(f"• **{nome}**: {total} Chests")
+        
+        await ctx.send('\n'.join(response))
+    else:
+        await ctx.send(f"❌ Nenhuma contagem encontrada para contas que contenham **'{nome_da_conta}'**.")
 
 
 # =================================================================
-#                         COMANDO DE RESET (LIMPAR MESSAGENS E DADOS)
+#                         COMANDO DE RESET
 # =================================================================
 
 @bot.command(name='reset', aliases=['reiniciar', 'limpar'])
@@ -269,9 +267,6 @@ async def reset_contagem(ctx):
         await ctx.send("🚫 Você não tem permissão de Administrador para usar este comando!")
         return
         
-    # Lógica de reset (limpeza de mensagens e dados) 
-    # ... [mantida a lógica anterior de limpeza de canal e reinício da mensagem de controle] ...
-    
     canal_log = bot.get_channel(CANAL_SOURCE_ID)
     canal_destino = bot.get_channel(CANAL_DESTINO_ID)
     
@@ -283,7 +278,7 @@ async def reset_contagem(ctx):
         try:
             contabilizar_e_enviar.stop()
         except Exception:
-            pass # Ignora erros de parada
+            pass
             
     try:
         # 3. ZERA E SALVA DADOS NOVOS
