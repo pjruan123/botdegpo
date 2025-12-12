@@ -2,10 +2,8 @@ import discord
 from discord.ext import commands, tasks
 import re
 import asyncio
-import os # <-- Adicionado para ler variáveis de ambiente
-# >>>>>>> Adicionados para o Servidor Web (Keep-Alive) <<<<<<<
-from aiohttp import web
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+import os 
+from aiohttp import web # Para o servidor Keep-Alive (24/7 no Render)
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
@@ -17,7 +15,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
     print("ERRO CRÍTICO: A variável de ambiente BOT_TOKEN não foi configurada.")
 
-# IDs de canais (mantidos como variáveis diretas, pois não são secretos)
+# IDs de canais
 CANAL_SOURCE_ID = 1448778112430116999  
 CANAL_DESTINO_ID = 1448701158272143402 
 
@@ -32,7 +30,6 @@ NOME_ALVO_ARCAN = "Arcan"
 #                       VARIÁVEIS GLOBAIS E INICIALIZAÇÃO
 # =================================================================
 
-# Variável para controlar a mensagem que será editada
 MENSAGEM_CONTROLE = None
 
 intents = discord.Intents.default()
@@ -46,12 +43,10 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 #                  >>>>>> SERVIDOR WEB (KEEP-ALIVE) <<<<<<
 # =================================================================
 
-# Handler para responder ao pinger (UptimeRobot, etc.)
 async def handle(request):
     """Responde ao ping HTTP para manter o Render ativo."""
     return web.Response(text="Bot is running and counting chests!")
 
-# Função para iniciar o servidor web
 async def start_web_server():
     """Inicia o servidor web em uma task separada."""
     try:
@@ -91,11 +86,11 @@ async def run_contabilizacao():
     compras_arcan = 0
 
     try:
-        # Busca as últimas 500 mensagens de log (Mantido o limite de 500)
+        # Busca as últimas 500 mensagens de log
         async for message in canal_log.history(limit=500):
             content = message.content
             
-            # NOVA LÓGICA PARA O FORMATO DO WEBHOOK: Busca por "Fruit Chest" e "Purchased"
+            # FILTRO ROBUSTO: Procura por qualquer "Fruit Chest" e "Purchased"
             if "Fruit Chest" in content and "Purchased" in content:
                 
                 quantidade = 0
@@ -106,7 +101,7 @@ async def run_contabilizacao():
                 if quantidade_match:
                     quantidade = int(quantidade_match.group(1))
                 
-                # Busca o nome do jogador (depois de "Player:")
+                # Busca o nome do jogador (depois de "Player:)
                 player_match = re.search(r"Player:([^(]+)", content)
                 if player_match:
                     player_name = player_match.group(1).strip()
@@ -168,7 +163,7 @@ async def run_contabilizacao():
 #              TAREFA DE CONTABILIZAÇÃO (RODA A CADA 3 MINUTOS)
 # =================================================================
 
-@tasks.loop(seconds=60) # 180 segundos = 3 minutos
+@tasks.loop(seconds=180) # 180 segundos = 3 minutos
 async def contabilizar_e_enviar():
     await run_contabilizacao()
 
@@ -205,7 +200,7 @@ async def reset_contagem(ctx):
     # 2. AVISO INICIAL
     mensagem_aviso = await ctx.send("🚨 **CONTAGEM SENDO REINICIADA** 🚨\nLimpando mensagens do canal de logs... Isso pode levar alguns segundos.")
 
-    # Tentativa SEGURA de parar o loop (Blindagem contra 'NoneType')
+    # Tentativa SEGURA de parar o loop
     if contabilizar_e_enviar.is_running():
         try:
             contabilizar_e_enviar.stop()
@@ -299,16 +294,15 @@ async def on_ready():
     print(f'Bot logado como {bot.user}')
     print('--------------------------------------------------')
     
-    # >>>>> CHAMA O SERVIDOR WEB (KEEP-ALIVE) AQUI <<<<<
+    # INICIA O SERVIDOR WEB (KEEP-ALIVE)
     asyncio.create_task(start_web_server()) 
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
     if not contabilizar_e_enviar.is_running():
         contabilizar_e_enviar.start()
         
 # Inicia o bot com o Token definido no topo do arquivo.
 if not BOT_TOKEN:
-    print("ERRO CRÍTICO: Não foi possível obter o BOT_TOKEN das variáveis de ambiente.")
+    print("ERRO CRÍTICO: Não foi possível obter o BOT_TOKEN das variáveis de ambiente. O bot não irá iniciar.")
 else:
     print("Iniciando o bot do Discord usando Variável de Ambiente...")
     try:
