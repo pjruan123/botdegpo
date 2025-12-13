@@ -5,11 +5,13 @@ import asyncio
 import os 
 import json 
 from aiohttp import web 
+import sys 
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
 # =================================================================
 
+# Lê o token da variável de ambiente BOT_TOKEN (DEVE ser configurada no Render)
 BOT_TOKEN = os.environ.get('BOT_TOKEN') 
 if not BOT_TOKEN:
     print("ERRO CRÍTICO: A variável de ambiente BOT_TOKEN não foi configurada.")
@@ -19,6 +21,13 @@ CANAL_SOURCE_ID = 1448778112430116999
 CANAL_DESTINO_ID = 1448701158272143402 
 ARQUIVO_DADOS = "contagens.json" 
 ARQUIVO_LAST_ID = "last_id.json" # Novo arquivo para salvar o marcador de leitura
+
+# =================================================================
+#                       VARIÁVEIS DE FILTRAGEM (REINTRODUZIDAS)
+# =================================================================
+
+NOME_ALVO_RUAN = "Ruan"
+NOME_ALVO_ARCAN = "Arcan"
 
 # =================================================================
 #                       VARIÁVEIS GLOBAIS E INICIALIZAÇÃO
@@ -123,7 +132,7 @@ async def run_contabilizacao():
     
     try:
         # Busca o histórico: 500 mensagens *APÓS* o último ID processado
-        # Se last_processed_id for None, ele pega as 500 mais recentes
+        # O limite é 500 para segurança, mas o 'after' garante que só pegamos as novas.
         async for message in canal_log.history(limit=500, after=discord.Object(id=last_processed_id) if last_processed_id else None):
             # Salva apenas mensagens enviadas por BOTs (como webhooks)
             if message.author.bot: 
@@ -134,7 +143,7 @@ async def run_contabilizacao():
         
         if not novas_mensagens:
             print("Nenhum novo log de bot encontrado.")
-            await run_update_embed() # Apenas atualiza o embed
+            await run_update_embed() 
             return
 
         print(f"Processando {len(novas_mensagens)} novas mensagens de log...")
@@ -181,7 +190,7 @@ async def run_contabilizacao():
                 if player_name_completo and quantidade > 0:
                     player_lower = player_name_completo.lower()
                     
-                    if "ruan" in player_lower or "arcan" in player_lower:
+                    if NOME_ALVO_RUAN.lower() in player_lower or NOME_ALVO_ARCAN.lower() in player_lower:
                         
                         contagens_individuais[player_name_completo] = contagens_individuais.get(player_name_completo, 0) + quantidade
                         
@@ -217,10 +226,10 @@ async def run_update_embed():
         title="🏆 Contagem de Fruit Chests (Total Acumulado)", 
         color=discord.Color.red()
     )
-    embed.add_field(name=f"📦 Compras de Ruan*",
+    embed.add_field(name=f"📦 Compras de {NOME_ALVO_RUAN}*",
                     value=f"**{total_ruan}** Fruit Chests compradas.",
                     inline=False)
-    embed.add_field(name=f"🐟 Compras de Arcan*",
+    embed.add_field(name=f"🐟 Compras de {NOME_ALVO_ARCAN}*",
                     value=f"**{total_arcan}** Fruit Chests compradas.",
                     inline=False)
     embed.add_field(name="📊 Total Geral do Grupo",
@@ -296,6 +305,11 @@ async def reset_contagem(ctx):
         # 3. ZERA E SALVA DADOS NOVOS
         contagens_individuais = {}
         last_processed_id = None # ZERA O MARCADOR
+        
+        # Também limpamos o arquivo do last_id
+        if os.path.exists(ARQUIVO_LAST_ID):
+             os.remove(ARQUIVO_LAST_ID)
+
         salvar_dados() 
 
         # 4. LIMPEZA DE MENSAGENS (Opcional, mas mantém a base limpa)
@@ -333,6 +347,7 @@ async def on_ready():
     print(f'Bot logado como {bot.user}')
     print('--------------------------------------------------')
     
+    # Carrega dados e o último ID processado
     carregar_dados() 
     
     asyncio.create_task(start_web_server()) 
