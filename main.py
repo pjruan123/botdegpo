@@ -5,6 +5,7 @@ import asyncio
 import os 
 import json 
 from aiohttp import web 
+import sys # Importado para uso na instalação de pyperclip (não usado no final, mas bom para deps)
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
@@ -15,7 +16,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
     print("ERRO CRÍTICO: A variável de ambiente BOT_TOKEN não foi configurada.")
 
-# IDs de canais
+# IDs de canais (Use seus IDs reais aqui)
 CANAL_SOURCE_ID = 1448778112430116999  
 CANAL_DESTINO_ID = 1448701158272143402 
 ARQUIVO_DADOS = "contagens.json" # Nome do arquivo de dados para persistência
@@ -35,7 +36,7 @@ MENSAGEM_CONTROLE = None
 contagens_individuais = {} # { "NomeConta1": 15, "NomeConta2": 30, ... }
 
 intents = discord.Intents.default()
-intents.message_content = True # DEVE estar ligada no Discord Developer Portal
+intents.message_content = True # Deve estar ligada no Discord Developer Portal
 intents.messages = True
 intents.guild_messages = True
 
@@ -63,7 +64,9 @@ def salvar_dados():
     """Salva as contagens individuais no arquivo JSON."""
     try:
         with open(ARQUIVO_DADOS, 'w') as f:
-            json.dump({'contagens': contagens_individuais}, f, indent=4)
+            # Garante que as chaves (nomes das contas) sejam strings
+            salvar = {'contagens': {str(k): v for k, v in contagens_individuais.items()}}
+            json.dump(salvar, f, indent=4)
         print("💾 Dados salvos com sucesso.")
     except Exception as e:
         print(f"❌ Erro ao salvar dados: {e}")
@@ -110,8 +113,6 @@ async def run_contabilizacao():
         print("Erro: Um dos canais (log ou destino) não foi encontrado.")
         return
 
-    # Usamos um conjunto para IDs de mensagens já processadas nesta rodada
-    # para evitar processar a mesma mensagem várias vezes na mesma execução.
     processadas_nesta_rodada = set() 
 
     try:
@@ -123,13 +124,13 @@ async def run_contabilizacao():
                 continue
 
             content = message.content
-            full_text = content or "" # Inicia com o conteúdo da mensagem, se houver
+            full_text = content or ""
             
-            # LÓGICA DE LEITURA ROBUSTA DE EMBED (para webhooks)
+            # LÓGICA DE LEITURA ROBUSTA DE EMBED
             if message.embeds:
                 try:
                     embed = message.embeds[0]
-                    # Agrega descrição, título e campos
+                    
                     if embed.description:
                         full_text += f" {embed.description}"
                     if embed.title:
@@ -138,29 +139,38 @@ async def run_contabilizacao():
                     for field in embed.fields:
                         full_text += f" {field.name}: {field.value}"
                         
+                    if embed.footer and embed.footer.text:
+                        full_text += f" {embed.footer.text}"
+                    if embed.author and embed.author.name:
+                        full_text += f" {embed.author.name}"
+                        
                 except Exception:
-                    continue # Ignora embeds mal formados
+                    continue 
 
             if not full_text.strip():
                 continue
 
-            # 4. PROCESSAMENTO DO CONTEÚDO
+            # 3. PROCESSAMENTO DO CONTEÚDO
             
             # Filtro de compra: Procura por qualquer "Fruit Chest" e "Purchased"
             if "Fruit Chest" in full_text and "Purchased" in full_text:
                 
+                # Para fins de DEPURACAO: Imprime o texto que o bot está lendo
+                print(f"***** DEBUG TEXT CAPTURADO *****: {full_text[:200].replace('\n', ' ')}")
+
                 quantidade = 0
                 player_name_completo = ""
                 
-                # Regex para encontrar a quantidade (ex: x1, x5)
+                # Regex para quantidade
                 quantidade_match = re.search(r"Purchased x(\d+)", full_text, re.IGNORECASE)
                 if quantidade_match:
                     quantidade = int(quantidade_match.group(1))
                 
-                # Regex para encontrar o nome do jogador (ex: Player: RuanPESCADOR2 (ID))
-                player_match = re.search(r"Player:([^(]+)", full_text)
+                # Regex mais tolerante para o nome do jogador: Procura por "Player:" seguido por qualquer caractere
+                player_match = re.search(r"Player:\s*([^(]+)", full_text, re.IGNORECASE)
                 if player_match:
                     player_name_completo = player_match.group(1).strip()
+                    # Limpa o ID se o formato for (Nome (ID))
                     if "(" in player_name_completo:
                         player_name_completo = player_name_completo.split("(")[0].strip()
                 
@@ -170,14 +180,12 @@ async def run_contabilizacao():
                     
                     if "ruan" in player_lower or "arcan" in player_lower:
                         
-                        # Armazena a contagem individualmente
-                        # A soma é acumulada a cada rodada, por isso o !reset é importante.
                         contagens_individuais[player_name_completo] = contagens_individuais.get(player_name_completo, 0) + quantidade
                         
                         print(f"✅ Contabilizado: {quantidade} baús para {player_name_completo}.")
                         processadas_nesta_rodada.add(message_id) 
                         
-        # 5. Salva os dados após a contagem
+        # 4. Salva os dados após a contagem
         salvar_dados()
 
     except Exception as e:
@@ -247,7 +255,8 @@ async def listar_conta(ctx, *, nome_da_conta: str):
     
     if matches:
         response = [f"Contas encontradas que contêm '{nome_da_conta}':"]
-        for nome, total in matches.items():
+        # Limita a 10 resultados para evitar spam
+        for nome, total in list(matches.items())[:10]:
             response.append(f"• **{nome}**: {total} Chests")
         
         await ctx.send('\n'.join(response))
@@ -267,8 +276,11 @@ async def reset_contagem(ctx):
         await ctx.send("🚫 Você não tem permissão de Administrador para usar este comando!")
         return
         
+    if ctx.channel.id != CANAL_DESTINO_ID:
+        await ctx.send(f"❌ Este comando só pode ser usado no canal de destino <#{CANAL_DESTINO_ID}>!")
+        return
+
     canal_log = bot.get_channel(CANAL_SOURCE_ID)
-    canal_destino = bot.get_channel(CANAL_DESTINO_ID)
     
     # 2. AVISO INICIAL
     mensagem_aviso = await ctx.send("🚨 **CONTAGEM SENDO REINICIADA** 🚨\nLimpando mensagens e **ZERANDO OS DADOS DE CONTAGEM**...")
@@ -294,7 +306,7 @@ async def reset_contagem(ctx):
                 if not deletadas:
                     break
                 total_apagadas += len(deletadas)
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(1.5) # Pequeno delay para evitar rate limits
             
         if canal_log and canal_log.guild.me.guild_permissions.manage_messages:
             await apagar_lentamente()
@@ -317,7 +329,7 @@ async def reset_contagem(ctx):
         embed.add_field(name="📊 Total Geral do Grupo", value="**0** Chests.", inline=False)
         embed.set_footer(text="Contagem e dados zerados. Novo rastreamento iniciado.")
         
-        MENSAGEM_CONTROLE = await canal_destino.send(embed=embed)
+        MENSAGEM_CONTROLE = await ctx.send(embed=embed) # Usa ctx.send para enviar no canal do comando
         
         await mensagem_aviso.edit(content=f"✅ Contagem reiniciada com sucesso! Dados zerados e {total_apagadas} mensagens limpas do canal de logs.")
 
