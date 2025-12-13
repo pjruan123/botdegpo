@@ -5,13 +5,11 @@ import asyncio
 import os 
 import json 
 from aiohttp import web 
-import sys # Importado para uso na instalação de pyperclip (não usado no final, mas bom para deps)
 
 # =================================================================
 #                         ⚠️ CONFIGURAÇÕES ⚠️
 # =================================================================
 
-# Lê o token da variável de ambiente BOT_TOKEN (DEVE ser configurada no Render)
 BOT_TOKEN = os.environ.get('BOT_TOKEN') 
 if not BOT_TOKEN:
     print("ERRO CRÍTICO: A variável de ambiente BOT_TOKEN não foi configurada.")
@@ -19,14 +17,8 @@ if not BOT_TOKEN:
 # IDs de canais (Use seus IDs reais aqui)
 CANAL_SOURCE_ID = 1448778112430116999  
 CANAL_DESTINO_ID = 1448701158272143402 
-ARQUIVO_DADOS = "contagens.json" # Nome do arquivo de dados para persistência
-
-# =================================================================
-#                       VARIÁVEIS DE FILTRAGEM
-# =================================================================
-
-NOME_ALVO_RUAN = "Ruan"
-NOME_ALVO_ARCAN = "Arcan"
+ARQUIVO_DADOS = "contagens.json" 
+ARQUIVO_LAST_ID = "last_id.json" # Novo arquivo para salvar o marcador de leitura
 
 # =================================================================
 #                       VARIÁVEIS GLOBAIS E INICIALIZAÇÃO
@@ -34,40 +26,57 @@ NOME_ALVO_ARCAN = "Arcan"
 
 MENSAGEM_CONTROLE = None
 contagens_individuais = {} # { "NomeConta1": 15, "NomeConta2": 30, ... }
+last_processed_id = None # ID da última mensagem de log processada
 
 intents = discord.Intents.default()
-intents.message_content = True # Deve estar ligada no Discord Developer Portal
+intents.message_content = True 
 intents.messages = True
 intents.guild_messages = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # =================================================================
-#                   FUNÇÕES DE PERSISTÊNCIA DE DADOS (JSON)
+#                   FUNÇÕES DE PERSISTÊNCIA DE DADOS
 # =================================================================
 
 def carregar_dados():
-    """Carrega as contagens individuais do arquivo JSON."""
-    global contagens_individuais
+    """Carrega contagens e o ID da última mensagem processada."""
+    global contagens_individuais, last_processed_id
+    
+    # Carrega contagens
     if os.path.exists(ARQUIVO_DADOS):
         try:
             with open(ARQUIVO_DADOS, 'r') as f:
-                data = json.load(f)
-                contagens_individuais = data.get('contagens', {})
-                print(f"✅ Dados carregados com sucesso: {len(contagens_individuais)} contas rastreadas.")
+                contagens_individuais = json.load(f).get('contagens', {})
         except Exception as e:
-            print(f"❌ Erro ao carregar dados: {e}")
-    else:
-        print("⚠️ Arquivo de dados não encontrado. Iniciando com contagens vazias.")
+            print(f"❌ Erro ao carregar contagens: {e}")
+            
+    # Carrega último ID
+    if os.path.exists(ARQUIVO_LAST_ID):
+        try:
+            with open(ARQUIVO_LAST_ID, 'r') as f:
+                last_processed_id = json.load(f).get('last_id')
+        except Exception as e:
+            print(f"❌ Erro ao carregar last_id: {e}")
+            
+    print(f"✅ Dados carregados. Último ID: {last_processed_id}")
+
 
 def salvar_dados():
-    """Salva as contagens individuais no arquivo JSON."""
+    """Salva contagens e o ID da última mensagem processada."""
     try:
+        # Salva contagens
         with open(ARQUIVO_DADOS, 'w') as f:
-            # Garante que as chaves (nomes das contas) sejam strings
             salvar = {'contagens': {str(k): v for k, v in contagens_individuais.items()}}
             json.dump(salvar, f, indent=4)
-        print("💾 Dados salvos com sucesso.")
+            
+        # Salva último ID
+        if last_processed_id:
+            with open(ARQUIVO_LAST_ID, 'w') as f:
+                json.dump({'last_id': last_processed_id}, f)
+                
+        print("💾 Dados e Last ID salvos com sucesso.")
+        
     except Exception as e:
         print(f"❌ Erro ao salvar dados: {e}")
 
@@ -76,11 +85,9 @@ def salvar_dados():
 # =================================================================
 
 async def handle(request):
-    """Responde ao ping HTTP para manter o Render ativo."""
     return web.Response(text="Bot is running and counting chests!")
 
 async def start_web_server():
-    """Inicia o servidor web em uma task separada."""
     try:
         app = web.Application()
         app.router.add_get('/', handle)
@@ -99,10 +106,9 @@ async def start_web_server():
 
 async def run_contabilizacao():
     """
-    Lê o histórico, extrai informações de compras de Fruit Chests (de texto ou Embeds)
-    e atualiza o rastreamento individual.
+    Lê o histórico *a partir* do último ID processado e atualiza a contagem.
     """
-    global MENSAGEM_CONTROLE, contagens_individuais
+    global MENSAGEM_CONTROLE, contagens_individuais, last_processed_id
 
     await bot.wait_until_ready() 
     
@@ -113,36 +119,37 @@ async def run_contabilizacao():
         print("Erro: Um dos canais (log ou destino) não foi encontrado.")
         return
 
-    processadas_nesta_rodada = set() 
-
+    novas_mensagens = []
+    
     try:
-        # Busca as últimas 500 mensagens
-        async for message in canal_log.history(limit=500):
-            message_id = message.id
-            
-            if message_id in processadas_nesta_rodada:
-                continue
+        # Busca o histórico: 500 mensagens *APÓS* o último ID processado
+        # Se last_processed_id for None, ele pega as 500 mais recentes
+        async for message in canal_log.history(limit=500, after=discord.Object(id=last_processed_id) if last_processed_id else None):
+            # Salva apenas mensagens enviadas por BOTs (como webhooks)
+            if message.author.bot: 
+                novas_mensagens.append(message)
+                
+        # Inverte a ordem para processar do mais antigo para o mais novo
+        novas_mensagens.reverse()
+        
+        if not novas_mensagens:
+            print("Nenhum novo log de bot encontrado.")
+            await run_update_embed() # Apenas atualiza o embed
+            return
 
-            content = message.content
-            full_text = content or ""
+        print(f"Processando {len(novas_mensagens)} novas mensagens de log...")
+
+        # Processa apenas as novas mensagens
+        for message in novas_mensagens:
+            full_text = message.content or ""
             
-            # LÓGICA DE LEITURA ROBUSTA DE EMBED
+            # LÓGICA DE LEITURA BASEADA NA IMAGEM (Embed Description é o foco)
             if message.embeds:
                 try:
                     embed = message.embeds[0]
-                    
                     if embed.description:
                         full_text += f" {embed.description}"
-                    if embed.title:
-                        full_text += f" {embed.title}"
-                    
-                    for field in embed.fields:
-                        full_text += f" {field.name}: {field.value}"
-                        
-                    if embed.footer and embed.footer.text:
-                        full_text += f" {embed.footer.text}"
-                    if embed.author and embed.author.name:
-                        full_text += f" {embed.author.name}"
+                    # A imagem não mostra outros campos, então focamos na descrição
                         
                 except Exception:
                     continue 
@@ -150,27 +157,23 @@ async def run_contabilizacao():
             if not full_text.strip():
                 continue
 
-            # 3. PROCESSAMENTO DO CONTEÚDO
-            
-            # Filtro de compra: Procura por qualquer "Fruit Chest" e "Purchased"
+            # 3. PROCESSAMENTO DO CONTEÚDO (REGEX ajustado para o formato da imagem)
             if "Fruit Chest" in full_text and "Purchased" in full_text:
                 
-                # Para fins de DEPURACAO: Imprime o texto que o bot está lendo
                 print(f"***** DEBUG TEXT CAPTURADO *****: {full_text[:200].replace('\n', ' ')}")
 
                 quantidade = 0
                 player_name_completo = ""
                 
-                # Regex para quantidade
+                # Regex para quantidade (Purchased x1)
                 quantidade_match = re.search(r"Purchased x(\d+)", full_text, re.IGNORECASE)
                 if quantidade_match:
                     quantidade = int(quantidade_match.group(1))
                 
-                # Regex mais tolerante para o nome do jogador: Procura por "Player:" seguido por qualquer caractere
+                # Regex para o nome do jogador (Player: Nome (ID))
                 player_match = re.search(r"Player:\s*([^(]+)", full_text, re.IGNORECASE)
                 if player_match:
                     player_name_completo = player_match.group(1).strip()
-                    # Limpa o ID se o formato for (Nome (ID))
                     if "(" in player_name_completo:
                         player_name_completo = player_name_completo.split("(")[0].strip()
                 
@@ -183,17 +186,28 @@ async def run_contabilizacao():
                         contagens_individuais[player_name_completo] = contagens_individuais.get(player_name_completo, 0) + quantidade
                         
                         print(f"✅ Contabilizado: {quantidade} baús para {player_name_completo}.")
-                        processadas_nesta_rodada.add(message_id) 
                         
-        # 4. Salva os dados após a contagem
-        salvar_dados()
+            # 4. ATUALIZA O MARCADOR
+            last_processed_id = message.id
+            salvar_dados()
 
+    except discord.Forbidden:
+        print("ERRO: O bot não tem permissão para ler o canal de logs.")
     except Exception as e:
         print(f"Ocorreu um erro durante a leitura do histórico: {e}") 
+        
+    # 5. Atualiza o Embed no canal de destino
+    await run_update_embed()
+
+
+async def run_update_embed():
+    """Função separada para atualizar o Embed de contagem."""
+    global MENSAGEM_CONTROLE
+    
+    canal_destino = bot.get_channel(CANAL_DESTINO_ID)
+    if not canal_destino:
         return
 
-    # --- MONTAGEM DO EMBED (Totais Gerais baseados nos dados salvos) ---
-    
     # Recalcula as somas totais do Ruan/Arcan com base nos dados salvos
     total_ruan = sum(v for k, v in contagens_individuais.items() if NOME_ALVO_RUAN.lower() in k.lower())
     total_arcan = sum(v for k, v in contagens_individuais.items() if NOME_ALVO_ARCAN.lower() in k.lower())
@@ -203,19 +217,18 @@ async def run_contabilizacao():
         title="🏆 Contagem de Fruit Chests (Total Acumulado)", 
         color=discord.Color.red()
     )
-    embed.add_field(name=f"📦 Compras de {NOME_ALVO_RUAN} (Total Acumulado)",
+    embed.add_field(name=f"📦 Compras de Ruan*",
                     value=f"**{total_ruan}** Fruit Chests compradas.",
                     inline=False)
-    embed.add_field(name=f"🐟 Compras de {NOME_ALVO_ARCAN} (Total Acumulado)",
+    embed.add_field(name=f"🐟 Compras de Arcan*",
                     value=f"**{total_arcan}** Fruit Chests compradas.",
                     inline=False)
     embed.add_field(name="📊 Total Geral do Grupo",
                     value=f"**{total_geral}** Chests.",
                     inline=False)
 
-    embed.set_footer(text="Contagem acumulada. Use !listar [NomeDaConta] para detalhes ou !reset para zerar tudo.")
+    embed.set_footer(text=f"Contagem acumulada. Último log processado: {last_processed_id}")
 
-    # --- ENVIO / EDIÇÃO DA MENSAGEM ---
     try:
         if MENSAGEM_CONTROLE is None:
             MENSAGEM_CONTROLE = await canal_destino.send(embed=embed)
@@ -224,9 +237,9 @@ async def run_contabilizacao():
 
     except discord.NotFound:
         MENSAGEM_CONTROLE = await canal_destino.send(embed=embed)
-
     except Exception as e:
         print(f"ERRO ao enviar/editar mensagem no Discord: {e}")
+
 
 # =================================================================
 #              TAREFA DE CONTABILIZAÇÃO (RODA A CADA 3 MINUTOS)
@@ -237,25 +250,22 @@ async def contabilizar_e_enviar():
     await run_contabilizacao()
 
 # =================================================================
-#                         COMANDO DE LISTAR
+#                         COMANDOS
 # =================================================================
 
 @bot.command(name='listar', aliases=['conta'])
 async def listar_conta(ctx, *, nome_da_conta: str):
     """Lista a contagem total de baús de uma conta específica."""
     
-    # Tenta busca exata
     if nome_da_conta in contagens_individuais:
         total = contagens_individuais[nome_da_conta]
         await ctx.send(f"✅ A conta **{nome_da_conta}** acumulou **{total}** Fruit Chests.")
         return
         
-    # Tenta busca parcial (ignora caixa)
     matches = {k: v for k, v in contagens_individuais.items() if nome_da_conta.lower() in k.lower()}
     
     if matches:
         response = [f"Contas encontradas que contêm '{nome_da_conta}':"]
-        # Limita a 10 resultados para evitar spam
         for nome, total in list(matches.items())[:10]:
             response.append(f"• **{nome}**: {total} Chests")
         
@@ -264,28 +274,18 @@ async def listar_conta(ctx, *, nome_da_conta: str):
         await ctx.send(f"❌ Nenhuma contagem encontrada para contas que contenham **'{nome_da_conta}'**.")
 
 
-# =================================================================
-#                         COMANDO DE RESET
-# =================================================================
-
 @bot.command(name='reset', aliases=['reiniciar', 'limpar'])
 async def reset_contagem(ctx):
-    global MENSAGEM_CONTROLE, contagens_individuais
+    global MENSAGEM_CONTROLE, contagens_individuais, last_processed_id
 
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("🚫 Você não tem permissão de Administrador para usar este comando!")
         return
         
-    if ctx.channel.id != CANAL_DESTINO_ID:
-        await ctx.send(f"❌ Este comando só pode ser usado no canal de destino <#{CANAL_DESTINO_ID}>!")
-        return
-
     canal_log = bot.get_channel(CANAL_SOURCE_ID)
     
-    # 2. AVISO INICIAL
     mensagem_aviso = await ctx.send("🚨 **CONTAGEM SENDO REINICIADA** 🚨\nLimpando mensagens e **ZERANDO OS DADOS DE CONTAGEM**...")
 
-    # Tentativa SEGURA de parar o loop
     if contabilizar_e_enviar.is_running():
         try:
             contabilizar_e_enviar.stop()
@@ -295,21 +295,14 @@ async def reset_contagem(ctx):
     try:
         # 3. ZERA E SALVA DADOS NOVOS
         contagens_individuais = {}
-        salvar_dados() # Salva o arquivo de contagens vazio
+        last_processed_id = None # ZERA O MARCADOR
+        salvar_dados() 
 
-        # 4. LIMPEZA DE MENSAGENS (Para evitar recontagem de logs)
+        # 4. LIMPEZA DE MENSAGENS (Opcional, mas mantém a base limpa)
         total_apagadas = 0
-        async def apagar_lentamente():
-            nonlocal total_apagadas
-            while True:
-                deletadas = await canal_log.purge(limit=50, check=lambda m: True)
-                if not deletadas:
-                    break
-                total_apagadas += len(deletadas)
-                await asyncio.sleep(1.5) # Pequeno delay para evitar rate limits
-            
         if canal_log and canal_log.guild.me.guild_permissions.manage_messages:
-            await apagar_lentamente()
+            total_apagadas = await canal_log.purge(limit=500) 
+            await asyncio.sleep(2)
 
         # 5. REINICIA O ESTADO DA MENSAGEM DE CONTROLE
         if MENSAGEM_CONTROLE:
@@ -320,23 +313,13 @@ async def reset_contagem(ctx):
         MENSAGEM_CONTROLE = None
         
         # 6. ENVIA NOVA MENSAGEM COM CONTAGEM ZERADA
-        embed = discord.Embed(
-            title="🏆 Contagem de Fruit Chests (REINICIADA)", 
-            color=discord.Color.green()
-        )
-        embed.add_field(name=f"📦 Compras de {NOME_ALVO_RUAN} (Total Acumulado)", value="**0** Fruit Chests compradas.", inline=False)
-        embed.add_field(name=f"🐟 Compras de {NOME_ALVO_ARCAN} (Total Acumulado)", value="**0** Fruit Chests compradas.", inline=False)
-        embed.add_field(name="📊 Total Geral do Grupo", value="**0** Chests.", inline=False)
-        embed.set_footer(text="Contagem e dados zerados. Novo rastreamento iniciado.")
+        await run_update_embed()
         
-        MENSAGEM_CONTROLE = await ctx.send(embed=embed) # Usa ctx.send para enviar no canal do comando
-        
-        await mensagem_aviso.edit(content=f"✅ Contagem reiniciada com sucesso! Dados zerados e {total_apagadas} mensagens limpas do canal de logs.")
+        await mensagem_aviso.edit(content=f"✅ Contagem e dados zerados. {total_apagadas} mensagens limpas.")
 
     except Exception as e:
         await ctx.send(f"❌ Ocorreu um erro inesperado: {e}")
     finally:
-        # Garante que o loop volte a rodar!
         if not contabilizar_e_enviar.is_running():
              contabilizar_e_enviar.start()
 
@@ -350,19 +333,16 @@ async def on_ready():
     print(f'Bot logado como {bot.user}')
     print('--------------------------------------------------')
     
-    # Carrega os dados antes de iniciar o loop de contagem
     carregar_dados() 
     
-    # INICIA O SERVIDOR WEB (KEEP-ALIVE)
     asyncio.create_task(start_web_server()) 
 
     if not contabilizar_e_enviar.is_running():
         contabilizar_e_enviar.start()
         
 if not BOT_TOKEN:
-    print("ERRO CRÍTICO: Não foi possível obter o BOT_TOKEN das variáveis de ambiente. O bot não irá iniciar.")
+    print("ERRO CRÍTICO: Não foi possível obter o BOT_TOKEN.")
 else:
-    print("Iniciando o bot do Discord usando Variável de Ambiente...")
     try:
         bot.run(BOT_TOKEN)
     except Exception as e:
